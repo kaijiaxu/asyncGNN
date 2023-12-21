@@ -31,6 +31,63 @@ BIG_NUMBER = 1e6
 PROCESSOR_TAG = 'clrs_processor'
 
 
+class Logsemiring(hk.Module):
+    """Logsemiring module."""
+
+    def __init__(
+            self,
+            output_size: int,
+            with_bias: bool = True,
+            w_init: Optional[hk.initializers.Initializer] = None,
+            b_init: Optional[hk.initializers.Initializer] = None,
+            name: Optional[str] = None,
+    ):
+        """Constructs the Logsemiring module.
+
+    Args:
+      output_size: Output dimensionality.
+      with_bias: Whether to add a bias to the output.
+      w_init: Optional initializer for weights. By default, uses random values
+        from truncated normal, with stddev ``1 / sqrt(fan_in)``.
+      b_init: Optional initializer for bias. By default, zero.
+      name: Name of the module.
+    """
+        super().__init__(name=name)
+        self.input_size = None
+        self.output_size = output_size
+        self.with_bias = with_bias
+        self.w_init = w_init
+        self.b_init = b_init or jnp.zeros
+
+    def __call__(
+            self,
+            inputs: jax.Array,
+            *,
+            precision: Optional[jax.lax.Precision] = None,
+    ) -> jax.Array:
+        """Computes a logsemiring transform of the input."""
+        if not inputs.shape:
+            raise ValueError("Input must not be scalar.")
+
+        input_size = self.input_size = inputs.shape[-1]
+        output_size = self.output_size
+        dtype = inputs.dtype
+
+        w_init = self.w_init
+        if w_init is None:
+            stddev = 1. / np.sqrt(self.input_size)
+            w_init = hk.initializers.TruncatedNormal(stddev=stddev)
+        w = hk.get_parameter("w", [input_size, output_size], dtype, init=w_init)
+        # out = jnp.dot(inputs, w, precision=precision)
+        out = jnp.matmul(jnp.exp(inputs), jnp.exp(w), precision=precision)
+        if self.with_bias:
+            b = hk.get_parameter("b", [self.output_size], dtype, init=self.b_init)
+            b = jnp.broadcast_to(b, out.shape)
+            out = out + jnp.exp(b)  # instead of out = out + b
+        out = jnp.log(out)
+        return out
+
+
 class Processor(hk.Module):
   """Processor abstract base class."""
 
@@ -444,6 +501,82 @@ class PGN(Processor):
     return ret, tri_msgs  # pytype: disable=bad-return-type  # numpy-scalars
 
 
+class PGNL3(Processor):
+    """Pointer Graph Networks (Veličković et al., NeurIPS 2020)."""
+
+    def __init__(
+            self,
+            out_size: int,
+            activation: Optional[_Fn] = None,
+            use_ln: bool = False,
+            gated: bool = False,
+            name: str = 'mpnn_l3_aggr',
+    ):
+        super().__init__(name=name)
+        self.out_size = out_size
+        self.activation = activation
+        self.use_ln = use_ln
+        self.gated = gated
+
+    def __call__(  # pytype: disable=signature-mismatch  # numpy-scalars
+            self,
+            node_fts: _Array,
+            edge_fts: _Array,
+            graph_fts: _Array,
+            adj_mat: _Array,
+            hidden: _Array,
+            **unused_kwargs,
+    ) -> _Array:
+        """MPNN inference step.
+    Level 3 of asynchrony-invariant GNNs:
+      a GNN with a max aggregator,
+      update function = max,
+      and a log-semiring 'quadrilinear' layer for the message function."""
+
+        b, n, _ = node_fts.shape
+        assert edge_fts.shape[:-1] == (b, n, n)
+        assert graph_fts.shape[:-1] == (b,)
+        assert adj_mat.shape == (b, n, n)
+
+        z = jnp.concatenate([node_fts, hidden], axis=-1)
+        # need to change the Linears:
+        m_1 = Logsemiring(self.out_size)
+        m_2 = Logsemiring(self.out_size)
+        m_e = Logsemiring(self.out_size)
+        m_g = Logsemiring(self.out_size)
+
+        msg_1 = m_1(z)
+        msg_2 = m_2(z)
+        msg_e = m_e(edge_fts)
+        msg_g = m_g(graph_fts)
+
+        msgs = (
+                jnp.expand_dims(msg_1, axis=1) + jnp.expand_dims(msg_2, axis=2) +
+                msg_e + jnp.expand_dims(msg_g, axis=(1, 2)))
+
+        maxarg = jnp.where(jnp.expand_dims(adj_mat, -1), msgs, -BIG_NUMBER)
+        msgs = jnp.max(maxarg, axis=1)
+
+        ret = jnp.maximum(node_fts, msgs)
+
+        if self.activation is not None:
+            ret = self.activation(ret)
+
+        if self.use_ln:
+            ln = hk.LayerNorm(axis=-1, create_scale=True, create_offset=True)
+            ret = ln(ret)
+
+        if self.gated:
+            gate1 = hk.Linear(self.out_size)
+            gate2 = hk.Linear(self.out_size)
+            gate3 = hk.Linear(self.out_size, b_init=hk.initializers.Constant(-3))
+            gate = jax.nn.sigmoid(gate3(jax.nn.relu(gate1(z) + gate2(msgs))))
+            ret = ret * gate + hidden * (1 - gate)
+
+        return ret, None  # pytype: disable=bad-return-type  # numpy-scalars
+
+
+
 class DeepSets(PGN):
   """Deep Sets (Zaheer et al., NeurIPS 2017)."""
 
@@ -461,6 +594,15 @@ class MPNN(PGN):
                adj_mat: _Array, hidden: _Array, **unused_kwargs) -> _Array:
     adj_mat = jnp.ones_like(adj_mat)
     return super().__call__(node_fts, edge_fts, graph_fts, adj_mat, hidden)
+
+
+class MPNNL3(PGNL3):
+    """Message-Passing Neural Network (Gilmer et al., ICML 2017)."""
+
+    def __call__(self, node_fts: _Array, edge_fts: _Array, graph_fts: _Array,
+                 adj_mat: _Array, hidden: _Array, **unused_kwargs) -> _Array:
+        adj_mat = jnp.ones_like(adj_mat)
+        return super().__call__(node_fts, edge_fts, graph_fts, adj_mat, hidden)
 
 
 class PGNMask(PGN):
@@ -835,6 +977,11 @@ def get_processor_factory(kind: str,
           use_triplets=True,
           nb_triplet_fts=nb_triplet_fts,
           gated=True,
+      )
+    elif kind == 'mpnn_l3':
+            processor = MPNNL3(
+                out_size=out_size,
+                use_ln=use_ln,
       )
     else:
       raise ValueError('Unexpected processor kind ' + kind)

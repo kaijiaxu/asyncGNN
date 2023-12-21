@@ -104,12 +104,16 @@ flags.DEFINE_integer('nb_triplet_fts', 8,
 flags.DEFINE_enum('encoder_init', 'xavier_on_scalars',
                   ['default', 'xavier_on_scalars'],
                   'Initialiser to use for the encoders.')
-flags.DEFINE_enum('processor_type', 'triplet_gmpnn',
+flags.DEFINE_enum('processor_type', 'mpnn_l3',
                   ['deepsets', 'mpnn', 'pgn', 'pgn_mask',
                    'triplet_mpnn', 'triplet_pgn', 'triplet_pgn_mask',
                    'gat', 'gatv2', 'gat_full', 'gatv2_full',
                    'gpgn', 'gpgn_mask', 'gmpnn',
-                   'triplet_gpgn', 'triplet_gpgn_mask', 'triplet_gmpnn'],
+                   'triplet_gpgn', 'triplet_gpgn_mask', 'triplet_gmpnn',
+                   'mpnn_l0', 'mpnn_l1', 'mpnn_l2', 'mpnn_l3',
+                   'mpnn_l1_async', 'mpnn_l2_async', 'mpnn_l3_async',
+                   'gat_l1', 'gat_l1_async',
+                   'gatv2_l1', 'gatv2_l1_async'],
                   'Processor type to use as the network P.')
 
 flags.DEFINE_string('checkpoint_path', '/tmp/CLRS30',
@@ -489,8 +493,8 @@ def main(unused_argv):
             val_sample_counts[algo_idx],
             new_rng_key,
             extras=common_extras)
-        logging.info('(val) algo %s step %d: %s',
-                     FLAGS.algorithms[algo_idx], step, val_stats)
+        logging.info('(val) algo %s using processor network %s step %d: %s',
+                     FLAGS.algorithms[algo_idx], FLAGS.processor_type, step, val_stats)
         val_scores[algo_idx] = val_stats['score']
 
       next_eval += FLAGS.eval_every
@@ -528,7 +532,7 @@ def main(unused_argv):
         test_sample_counts[algo_idx],
         new_rng_key,
         extras=common_extras)
-    logging.info('(test) algo %s : %s', FLAGS.algorithms[algo_idx], test_stats)
+    logging.info('(test) algo %s using processor network %s: %s', FLAGS.algorithms[algo_idx], FLAGS.processor_type, test_stats)
 
   logging.info('Done!')
 
