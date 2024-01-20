@@ -227,6 +227,101 @@ class GATFull(GAT):
     return super().__call__(node_fts, edge_fts, graph_fts, adj_mat, hidden)
 
 
+class GATL1(Processor):
+    """Graph Attention Network (Velickovic et al., ICLR 2018)."""
+
+    def __init__(
+            self,
+            out_size: int,
+            nb_heads: int,
+            activation: Optional[_Fn] = jax.nn.relu,
+            residual: bool = True,
+            use_ln: bool = False,
+            name: str = 'gat_l1_aggr',
+    ):
+        super().__init__(name=name)
+        self.out_size = out_size
+        self.nb_heads = nb_heads
+        if out_size % nb_heads != 0:
+            raise ValueError('The number of attention heads must divide the width!')
+        self.head_size = out_size // nb_heads
+        self.activation = activation
+        self.residual = residual
+        self.use_ln = use_ln
+
+    def __call__(  # pytype: disable=signature-mismatch  # numpy-scalars
+            self,
+            node_fts: _Array,
+            edge_fts: _Array,
+            graph_fts: _Array,
+            adj_mat: _Array,
+            hidden: _Array,
+            **unused_kwargs,
+    ) -> _Array:
+        """GAT inference step."""
+
+        b, n, _ = node_fts.shape
+        assert edge_fts.shape[:-1] == (b, n, n)
+        assert graph_fts.shape[:-1] == (b,)
+        assert adj_mat.shape == (b, n, n)
+
+        z = jnp.concatenate([node_fts, hidden], axis=-1)
+        m = hk.Linear(self.out_size)
+        skip = hk.Linear(self.out_size)
+
+        bias_mat = (adj_mat - 1.0) * 1e9
+        bias_mat = jnp.tile(bias_mat[..., None],
+                            (1, 1, 1, self.nb_heads))  # [B, N, N, H]
+        bias_mat = jnp.transpose(bias_mat, (0, 3, 1, 2))  # [B, H, N, N]
+
+        a_1 = hk.Linear(self.nb_heads)
+        a_2 = hk.Linear(self.nb_heads)
+        a_e = hk.Linear(self.nb_heads)
+        a_g = hk.Linear(self.nb_heads)
+
+        values = m(z)  # [B, N, H*F]
+        values = jnp.reshape(
+            values,
+            values.shape[:-1] + (self.nb_heads, self.head_size))  # [B, N, H, F]
+        values = jnp.transpose(values, (0, 2, 1, 3))  # [B, H, N, F]
+
+        att_1 = jnp.expand_dims(a_1(z), axis=-1)
+        att_2 = jnp.expand_dims(a_2(z), axis=-1)
+        att_e = a_e(edge_fts)
+        att_g = jnp.expand_dims(a_g(graph_fts), axis=-1)
+
+        logits = (
+                jnp.transpose(att_1, (0, 2, 1, 3)) +  # + [B, H, N, 1]
+                jnp.transpose(att_2, (0, 2, 3, 1)) +  # + [B, H, 1, N]
+                jnp.transpose(att_e, (0, 3, 1, 2)) +  # + [B, H, N, N]
+                jnp.expand_dims(att_g, axis=-1)  # + [B, H, 1, 1]
+        )  # = [B, H, N, N]
+
+        unnormalized = jnp.exp(jax.nn.leaky_relu(logits) + bias_mat)
+        res = jnp.matmul(unnormalized, values)
+        sums = jnp.sum(unnormalized, axis=-1, keepdims=True)
+        ret = res / sums
+
+        # unnormalized = jnp.exp(jax.nn.leaky_relu(logits) + bias_mat)
+        # res = unnormalized / jnp.sum(unnormalized, axis=-1, keepdims=True)
+        # ret = jnp.matmul(res, values)
+
+        ret = jnp.transpose(ret, (0, 2, 1, 3))  # [B, N, H, F]
+        ret = jnp.reshape(ret, ret.shape[:-2] + (self.out_size,))  # [B, N, H*F]
+
+        if self.residual:
+            ret += skip(z)
+
+        if self.activation is not None:
+            ret = self.activation(ret)
+
+        if self.use_ln:
+            ln = hk.LayerNorm(axis=-1, create_scale=True, create_offset=True)
+            ret = ln(ret)
+
+        return ret, None  # pytype: disable=bad-return-type  # numpy-scalars
+
+
 class GATv2(Processor):
   """Graph Attention Network v2 (Brody et al., ICLR 2022)."""
 
@@ -1177,6 +1272,12 @@ def get_processor_factory(kind: str,
     elif kind == 'mpnn_l3':
       processor = MPNNL3(
           out_size=out_size,
+          use_ln=use_ln,
+      )
+    elif kind == 'gat_l1':
+      processor = GATL1(
+          out_size=out_size,
+          nb_heads=nb_heads,
           use_ln=use_ln,
       )
     else:
