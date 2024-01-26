@@ -30,7 +30,7 @@ import requests
 import tensorflow as tf
 
 
-flags.DEFINE_list('algorithms', ['topological_sort'], 'Which algorithms to run.')
+flags.DEFINE_list('algorithms', ['activity_selector'], 'Which algorithms to run.')
 flags.DEFINE_list('train_lengths', ['4', '7', '11', '13', '16'],
                   'Which training sizes to use. A size of -1 means '
                   'use the benchmark dataset.')
@@ -104,7 +104,7 @@ flags.DEFINE_integer('nb_triplet_fts', 8,
 flags.DEFINE_enum('encoder_init', 'xavier_on_scalars',
                   ['default', 'xavier_on_scalars'],
                   'Initialiser to use for the encoders.')
-flags.DEFINE_enum('processor_type', 'gat_l1',
+flags.DEFINE_enum('processor_type', 'gatv2_l1',
                   ['deepsets', 'mpnn', 'pgn', 'pgn_mask',
                    'triplet_mpnn', 'triplet_pgn', 'triplet_pgn_mask',
                    'gat', 'gatv2', 'gat_full', 'gatv2_full',
