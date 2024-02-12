@@ -721,6 +721,111 @@ class PGN(Processor):
     return ret, tri_msgs  # pytype: disable=bad-return-type  # numpy-scalars
 
 
+class PGNL0(Processor):
+
+    def __init__(
+            self,
+            out_size: int,
+            mid_size: Optional[int] = None,
+            mid_act: Optional[_Fn] = None,
+            activation: Optional[_Fn] = jax.nn.relu,
+            msgs_mlp_sizes: Optional[List[int]] = None,
+            use_ln: bool = False,
+            gated: bool = False,
+            name: str = 'mpnn_l0_aggr',
+    ):
+        super().__init__(name=name)
+        if mid_size is None:
+            self.mid_size = out_size
+        else:
+            self.mid_size = mid_size
+        self.out_size = out_size
+        self.mid_act = mid_act
+        self.activation = activation
+        self._msgs_mlp_sizes = msgs_mlp_sizes
+        self.use_ln = use_ln
+        self.gated = gated
+
+    def __call__(  # pytype: disable=signature-mismatch  # numpy-scalars
+            self,
+            node_fts: _Array,
+            edge_fts: _Array,
+            graph_fts: _Array,
+            adj_mat: _Array,
+            hidden: _Array,
+            **unused_kwargs,
+    ) -> _Array:
+        """MPNN inference step.
+    Level 0 of asynchrony-invariant GNNs:
+      a GNN with a RNN aggregator,
+      a linear layer with ReLU activation for the update function,
+      and an MLP for the message function."""
+
+        b, n, f = node_fts.shape
+        assert edge_fts.shape[:-1] == (b, n, n)
+        assert graph_fts.shape[:-1] == (b,)
+        assert adj_mat.shape == (b, n, n)
+
+        z = jnp.concatenate([node_fts, hidden], axis=-1)
+        m_1 = hk.Linear(self.mid_size)
+        m_2 = hk.Linear(self.mid_size)
+        m_e = hk.Linear(self.mid_size)
+        m_g = hk.Linear(self.mid_size)
+
+        o1 = hk.Linear(self.out_size)
+        o2 = hk.Linear(self.out_size)
+
+        msg_1 = m_1(z)
+        msg_2 = m_2(z)
+        msg_e = m_e(edge_fts)
+        msg_g = m_g(graph_fts)
+
+        msgs = (
+                jnp.expand_dims(msg_1, axis=1) + jnp.expand_dims(msg_2, axis=2) +
+                msg_e + jnp.expand_dims(msg_g, axis=(1, 2)))
+
+        if self._msgs_mlp_sizes is not None:
+            msgs = hk.nets.MLP(self._msgs_mlp_sizes)(jax.nn.relu(msgs))
+
+        if self.mid_act is not None:
+            msgs = self.mid_act(msgs)
+
+        input_msgs = jnp.transpose(msgs, (0, 2, 1, 3))  # [B, N, N, F]
+        input_msgs = jnp.reshape(input_msgs, (b*n, n, f))  # [B*N, N, F]
+
+        agg = hk.LSTM(f)
+        outs, _ = hk.dynamic_unroll(
+            core=agg,
+            input_sequence=input_msgs,
+            initial_state=agg.initial_state(batch_size=input_msgs.shape[0]),
+            time_major=False,
+            return_all_states=False
+        )  # out = [B*N, T=N, F]
+        msgs = outs.at[:, -1, :].get()  # get output at last timestep
+        msgs = jnp.reshape(msgs, (b, n, f))  # [B, N, F]
+
+        h_1 = o1(z)
+        h_2 = o2(msgs)
+
+        ret = h_1 + h_2
+
+        if self.activation is not None:
+            ret = self.activation(ret)
+
+        if self.use_ln:
+            ln = hk.LayerNorm(axis=-1, create_scale=True, create_offset=True)
+            ret = ln(ret)
+
+        if self.gated:
+            gate1 = hk.Linear(self.out_size)
+            gate2 = hk.Linear(self.out_size)
+            gate3 = hk.Linear(self.out_size, b_init=hk.initializers.Constant(-3))
+            gate = jax.nn.sigmoid(gate3(jax.nn.relu(gate1(z) + gate2(msgs))))
+            ret = ret * gate + hidden * (1 - gate)
+
+        return ret, None  # pytype: disable=bad-return-type  # numpy-scalars
+
+
 class PGNL1(Processor):
 
     def __init__(
@@ -981,6 +1086,15 @@ class MPNN(PGN):
                adj_mat: _Array, hidden: _Array, **unused_kwargs) -> _Array:
     adj_mat = jnp.ones_like(adj_mat)
     return super().__call__(node_fts, edge_fts, graph_fts, adj_mat, hidden)
+  
+
+class MPNNL0(PGNL0):
+    """Message-Passing Neural Network (Gilmer et al., ICML 2017)."""
+
+    def __call__(self, node_fts: _Array, edge_fts: _Array, graph_fts: _Array,
+                 adj_mat: _Array, hidden: _Array, **unused_kwargs) -> _Array:
+        adj_mat = jnp.ones_like(adj_mat)
+        return super().__call__(node_fts, edge_fts, graph_fts, adj_mat, hidden)
 
 
 class MPNNL1(PGNL1):
@@ -1382,6 +1496,12 @@ def get_processor_factory(kind: str,
           use_triplets=True,
           nb_triplet_fts=nb_triplet_fts,
           gated=True,
+      )
+    elif kind == 'mpnn_l0':
+      processor = MPNNL0(
+          out_size=out_size,
+          msgs_mlp_sizes=[out_size, out_size],
+          use_ln=use_ln,
       )
     elif kind == 'mpnn_l1':
       processor = MPNNL1(
