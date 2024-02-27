@@ -79,7 +79,7 @@ class Logsemiring(hk.Module):
             w_init = hk.initializers.TruncatedNormal(stddev=stddev)
         w = hk.get_parameter("w", [input_size, output_size], dtype, init=w_init)
         # out = jnp.dot(inputs, w, precision=precision)
-        out = jnp.matmul(jnp.exp(inputs), jnp.exp(w), precision=precision)
+        out = jnp.dot(jnp.exp(inputs), jnp.exp(w), precision=precision)
         if self.with_bias:
             b = hk.get_parameter("b", [self.output_size], dtype, init=self.b_init)
             b = jnp.broadcast_to(b, out.shape)
