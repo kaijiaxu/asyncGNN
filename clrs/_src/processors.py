@@ -23,6 +23,7 @@ import haiku as hk
 import jax
 import jax.numpy as jnp
 import numpy as np
+from synjax._src.utils.semirings import LogSemiring
 
 
 _Array = chex.Array
@@ -1032,10 +1033,10 @@ class PGNL3(Processor):
 
         z = jnp.concatenate([node_fts, hidden], axis=-1)
         # need to change the Linears:
-        m_1 = Logsemiring(self.out_size)
-        m_2 = Logsemiring(self.out_size)
-        m_e = Logsemiring(self.out_size)
-        m_g = Logsemiring(self.out_size)
+        m_1 = LogSemiring(self.out_size)
+        m_2 = LogSemiring(self.out_size)
+        m_e = LogSemiring(self.out_size)
+        m_g = LogSemiring(self.out_size)
 
         msg_1 = m_1(z)
         msg_2 = m_2(z)
