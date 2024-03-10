@@ -23,7 +23,8 @@ import haiku as hk
 import jax
 import jax.numpy as jnp
 import numpy as np
-from synjax._src.utils.semirings import LogSemiring
+from synjax._src.utils import semirings_dot_general
+from synjax._src.utils import semirings_einsum
 
 
 _Array = chex.Array
@@ -87,6 +88,69 @@ class Logsemiring(hk.Module):
             out = out + jnp.exp(b)  # instead of out = out + b
         out = jnp.log(out)
         return out
+    
+class Maxsemiring(hk.Module):
+    """Maxsemiring module."""
+
+    def __init__(
+            self,
+            output_size: int,
+            with_bias: bool = True,
+            w_init: Optional[hk.initializers.Initializer] = None,
+            b_init: Optional[hk.initializers.Initializer] = None,
+            name: Optional[str] = None,
+    ):
+        """Constructs the Maxsemiring module.
+
+    Args:
+      output_size: Output dimensionality.
+      with_bias: Whether to add a bias to the output.
+      w_init: Optional initializer for weights. By default, uses random values
+        from truncated normal, with stddev ``1 / sqrt(fan_in)``.
+      b_init: Optional initializer for bias. By default, zero.
+      name: Name of the module.
+    """
+        super().__init__(name=name)
+        self.input_size = None
+        self.output_size = output_size
+        self.with_bias = with_bias
+        self.w_init = w_init
+        self.b_init = b_init or jnp.zeros
+
+    def __call__(
+            self,
+            inputs: jax.Array,
+            *,
+            precision: Optional[jax.lax.Precision] = None,
+    ) -> jax.Array:
+        """Computes a logsemiring transform of the input."""
+        if not inputs.shape:
+            raise ValueError("Input must not be scalar.")
+
+        input_size = self.input_size = inputs.shape[-1]
+        output_size = self.output_size
+        dtype = inputs.dtype
+
+        w_init = self.w_init
+        if w_init is None:
+            stddev = 1. / np.sqrt(self.input_size)
+            w_init = hk.initializers.TruncatedNormal(stddev=stddev)
+        w = hk.get_parameter("w", [input_size, output_size], dtype, init=w_init)
+        # out = jnp.dot(inputs, w, precision=precision)
+        expression = "...ij,jk->...ik"
+        out = self.max_plus_semiring(expression, inputs, w)
+        if self.with_bias:
+            b = hk.get_parameter("b", [self.output_size], dtype, init=self.b_init)
+            b = jnp.broadcast_to(b, out.shape)
+            out = jnp.maximum(out, b)
+        return out
+
+    def max_plus_semiring(self, *operands, **kwargs):
+        sum_fn = jnp.max
+        mul_op = jnp.add
+        dot_general = semirings_dot_general.build_dot_general(sum_fn, mul_op)
+        return semirings_einsum.einsum_generalized(
+            *operands, **kwargs, sum_fn=sum_fn, mul_op=mul_op, dot_general=dot_general)
 
 
 class Processor(hk.Module):
@@ -1033,10 +1097,10 @@ class PGNL3(Processor):
 
         z = jnp.concatenate([node_fts, hidden], axis=-1)
         # need to change the Linears:
-        m_1 = LogSemiring(self.out_size)
-        m_2 = LogSemiring(self.out_size)
-        m_e = LogSemiring(self.out_size)
-        m_g = LogSemiring(self.out_size)
+        m_1 = Logsemiring(self.out_size)
+        m_2 = Logsemiring(self.out_size)
+        m_e = Logsemiring(self.out_size)
+        m_g = Logsemiring(self.out_size)
 
         msg_1 = m_1(z)
         msg_2 = m_2(z)
@@ -1531,6 +1595,12 @@ def get_processor_factory(kind: str,
           out_size=out_size,
           nb_heads=nb_heads,
           use_ln=use_ln
+      )
+    elif kind == 'pgn_l1':
+      processor = PGNL1(
+          out_size=out_size,
+          msgs_mlp_sizes=[out_size, out_size],
+          use_ln=use_ln,
       )
     else:
       raise ValueError('Unexpected processor kind ' + kind)
