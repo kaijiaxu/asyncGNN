@@ -1097,15 +1097,20 @@ class PGNL3(Processor):
 
         z = jnp.concatenate([node_fts, hidden], axis=-1)
         # need to change the Linears:
-        m_1 = Logsemiring(self.out_size)
-        m_2 = Logsemiring(self.out_size)
-        m_e = Logsemiring(self.out_size)
-        m_g = Logsemiring(self.out_size)
+        m_1 = hk.Linear(self.out_size)
+        m_2 = hk.Linear(self.out_size)
+        m_e = hk.Linear(self.out_size)
+        m_g = hk.Linear(self.out_size)
 
-        msg_1 = m_1(z)
-        msg_2 = m_2(z)
-        msg_e = m_e(edge_fts)
-        msg_g = m_g(graph_fts)
+        m_1_log = Logsemiring(self.out_size)
+        m_2_log = Logsemiring(self.out_size)
+        m_e_log = Logsemiring(self.out_size)
+        m_g_log = Logsemiring(self.out_size)
+
+        msg_1 = m_1_log(m_1(z))
+        msg_2 = m_2_log(m_2(z))
+        msg_e = m_e_log(m_e(edge_fts))
+        msg_g = m_g_log(m_g(graph_fts))
 
         msgs = (
                 jnp.expand_dims(msg_1, axis=1) + jnp.expand_dims(msg_2, axis=2) +
