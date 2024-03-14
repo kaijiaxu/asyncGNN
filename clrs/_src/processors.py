@@ -80,13 +80,23 @@ class Logsemiring(hk.Module):
             stddev = 1. / np.sqrt(self.input_size)
             w_init = hk.initializers.TruncatedNormal(stddev=stddev)
         w = hk.get_parameter("w", [input_size, output_size], dtype, init=w_init)
+        # original hk.Linear:
         # out = jnp.dot(inputs, w, precision=precision)
-        out = jnp.dot(jnp.exp(inputs), jnp.exp(w), precision=precision)
+        # original Logsemiring:
+        # out = jnp.log(jnp.dot(jnp.exp(inputs), jnp.exp(w), precision=precision))
+        # stable Logsemiring:
+        inputs_max = jnp.max(inputs)
+        w_max = jnp.max(w)
+        out = jnp.log(jnp.matmul(jnp.exp(inputs - inputs_max), jnp.exp(w - w_max)))
+        out = out + inputs_max + w_max
         if self.with_bias:
             b = hk.get_parameter("b", [self.output_size], dtype, init=self.b_init)
             b = jnp.broadcast_to(b, out.shape)
-            out = out + jnp.exp(b)  # instead of out = out + b
-        out = jnp.log(out)
+            # original Logsemiring:
+            # out = jnp.log(jnp.exp(out) + jnp.exp(b))  # instead of out = out + b
+            out_max = jnp.max(out)
+            b_max = jnp.max(b)
+            out = jnp.log(jnp.exp(out - out_max) + jnp.exp(b - b_max)) + out_max + b_max
         return out
     
 class Maxsemiring(hk.Module):
@@ -1102,15 +1112,10 @@ class PGNL3(Processor):
         m_e = hk.Linear(self.out_size)
         m_g = hk.Linear(self.out_size)
 
-        m_1_log = Logsemiring(self.out_size)
-        m_2_log = Logsemiring(self.out_size)
-        m_e_log = Logsemiring(self.out_size)
-        m_g_log = Logsemiring(self.out_size)
-
-        msg_1 = m_1_log(m_1(z))
-        msg_2 = m_2_log(m_2(z))
-        msg_e = m_e_log(m_e(edge_fts))
-        msg_g = m_g_log(m_g(graph_fts))
+        msg_1 = m_1(z)
+        msg_2 = m_2(z)
+        msg_e = m_e(edge_fts)
+        msg_g = m_g(graph_fts)
 
         msgs = (
                 jnp.expand_dims(msg_1, axis=1) + jnp.expand_dims(msg_2, axis=2) +
