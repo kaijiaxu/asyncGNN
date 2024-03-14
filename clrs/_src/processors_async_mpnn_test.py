@@ -305,7 +305,7 @@ class MPNNL3AsyncPropertiesTest(absltest.TestCase):
 
             processor = processors.MPNNL3(
                 out_size=out_size,
-                # semiring='maxplus',
+                semiring='maxplus',
             )
             return processor(
                 node_fts=node_fts,
