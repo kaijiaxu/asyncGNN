@@ -94,9 +94,8 @@ class Logsemiring(hk.Module):
             b = jnp.broadcast_to(b, out.shape)
             # original Logsemiring:
             # out = jnp.log(jnp.exp(out) + jnp.exp(b))  # instead of out = out + b
-            out_max = jnp.max(out)
-            b_max = jnp.max(b)
-            out = jnp.log(jnp.exp(out - out_max) + jnp.exp(b - b_max)) + out_max + b_max
+            maxval = max(jnp.max(out), jnp.max(b))
+            out = jnp.log(jnp.exp(out - maxval) + jnp.exp(b - maxval)) + maxval
         return out
     
 class Maxsemiring(hk.Module):
