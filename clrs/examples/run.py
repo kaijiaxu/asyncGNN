@@ -30,7 +30,7 @@ import requests
 import tensorflow as tf
 
 
-flags.DEFINE_list('algorithms', ['mst_prim'], 'Which algorithms to run.')
+flags.DEFINE_list('algorithms', ['segments_intersect'], 'Which algorithms to run.')
 flags.DEFINE_list('train_lengths', ['4', '7', '11', '13', '16'],
                   'Which training sizes to use. A size of -1 means '
                   'use the benchmark dataset.')
