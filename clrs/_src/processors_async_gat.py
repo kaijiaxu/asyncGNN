@@ -224,18 +224,17 @@ class GATv2L1AsyncTest(Processor):
         res = jnp.zeros_like(values)  # same shape as values
         sigma = jnp.zeros_like(values)  # same shape as values
 
-        index = np.arange(0, n*self.head_size*n, 1)
+        index = np.arange(0, n*n, 1)
         np.random.shuffle(index)
         for num in index:
-            k = num // (n*n)
-            rem = num % (n*n)
-            j = rem // n
-            i = rem % n
-            numerator = jnp.multiply(res[:, :, i, k], sigma[:, :, i, k]) + jnp.multiply(exp_coefs[:, :, i, j], values[:, :, j, k])
-            denominator = sigma[:, :, i, k] + exp_coefs[:, :, i, j]
-            new_val = jnp.where(denominator == 0, 0, numerator/denominator)  # deal with division by zero
-            res = res.at[:, :, i, k].set(new_val)
-            sigma = sigma.at[:, :, i, k].add(exp_coefs[:, :, i, j])
+            j = num // n
+            i = num % n
+            for k in range(self.head_size):
+                numerator = jnp.multiply(res[:, :, i, k], sigma[:, :, i, k]) + jnp.multiply(exp_coefs[:, :, i, j], values[:, :, j, k])
+                denominator = sigma[:, :, i, k] + exp_coefs[:, :, i, j]
+                new_val = jnp.where(denominator == 0, 0, numerator/denominator)  # deal with division by zero
+                res = res.at[:, :, i, k].set(new_val)
+                sigma = sigma.at[:, :, i, k].add(exp_coefs[:, :, i, j])
         ret = res
 
         ret = jnp.transpose(ret, (0, 2, 1, 3))  # [B, N, H, F]
